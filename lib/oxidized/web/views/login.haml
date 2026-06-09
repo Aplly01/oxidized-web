@@ -1,0 +1,21 @@
+%h2.text-center.mb-4 Вход в систему
+
+%form{method: "POST", action: url_for('/login'), class: "p-4 bg-gray-50 rounded shadow-sm mx-auto"}
+  - if session[:error]
+    .alert.alert-danger.mb-3= session[:error]
+  
+  .mb-3
+    %label.form-label Имя пользователя
+    %input.form-control{type: "text", name: "username", required: true, autofocus: true}
+  
+  .mb-3
+    %label.form-label Пароль
+    %input.form-control{type: "password", name: "password", required: true}
+  
+  .d-grid
+    %button.btn.btn-primary{type: "submit"} Войти
+
+:css
+  form { max-width: 400px; margin-top: 50px; }
+  .alert { padding: 10px 15px; border-radius: 6px; }
+  .alert-danger { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }

@@ -1,0 +1,90 @@
+%h2.text-center Добавить новый коммутатор
+
+%form#addNodeForm{method: "POST", action: "/nodes/add", class: "p-4 bg-gray-50 rounded shadow-sm"}
+  %div.mb-3
+    %label.form-label Имя устройства
+    %input.form-control{type: "text", name: "name", placeholder: "swc / swh", required: true}
+  %div.mb-3
+    %label.form-label IP-адрес (опционально)
+    %input.form-control{type: "text", name: "ip", placeholder: "10.80.1.x"}
+  %div.mb-3
+    %label.form-label Модель устройства
+    %select.form-control{name: "model", required: true}
+      %option{value: "", disabled: true, selected: true} -- Выберите модель --
+      - @models.each do |model|
+        %option{value: model[:value]}= model[:label]
+  %div.mb-3
+    %label.form-label Логин
+    %input.form-control{type: "text", name: "username", required: true}
+  %div.mb-3
+    %label.form-label Пароль
+    %input.form-control{type: "password", name: "password", required: true}
+  %div.mb-3
+    %label.form-label Enable-пароль
+    %input.form-control{type: "password", name: "enable", required: true}
+  
+  %button.btn.btn-primary{type: "submit", id: "submitBtn"} Добавить устройство
+
+#notification.toast{class: "hidden"}
+  %span#toastMsg
+
+:css
+  .toast {
+    position: fixed; top: 20px; right: 20px; padding: 12px 24px; border-radius: 6px;
+    color: #fff; font-weight: 500; box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    transition: opacity 0.3s ease, transform 0.3s ease; z-index: 1000;
+    max-width: 350px; word-break: break-word;
+  }
+  .toast.success { background: #28a745; border-left: 4px solid #1e7e34; }
+  .toast.error   { background: #dc3545; border-left: 4px solid #bd2130; }
+  .toast.hidden  { opacity: 0; transform: translateX(20px); pointer-events: none; }
+  .btn:disabled  { opacity: 0.6; cursor: not-allowed; }
+
+:javascript
+  document.addEventListener('DOMContentLoaded', function() {
+    const form      = document.getElementById('addNodeForm');
+    const toast     = document.getElementById('notification');
+    const toastMsg  = document.getElementById('toastMsg');
+    const submitBtn = document.getElementById('submitBtn');
+
+    if (!form || !toast) return;
+
+    form.addEventListener('submit', function(e) {
+      e.preventDefault();
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Отправка...';
+
+      const formData = new FormData(form);
+      
+      fetch('/nodes/add', {
+        method: 'POST',
+        headers: { 'Accept': 'application/json' },
+        body: new URLSearchParams(formData)
+      })
+      .then(res => res.json())
+      .then(data => {
+        const isSuccess = !data.error;
+        showNotification(isSuccess ? data.message : data.error, isSuccess);
+        
+        if (isSuccess) {
+          form.reset();
+          setTimeout(() => location.reload(), 1500);
+        }
+      })
+      .catch(err => {
+        showNotification('Ошибка сети: ' + (err.message || 'Не удалось связаться с сервером'), false);
+      })
+      .finally(() => {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Добавить устройство';
+      });
+    });
+
+    function showNotification(msg, success) {
+      toastMsg.textContent = msg;
+      toast.className = success ? 'toast success' : 'toast error';
+      void toast.offsetWidth;
+      toast.classList.remove('hidden');
+      setTimeout(() => toast.classList.add('hidden'), 5000);
+    }
+  });
