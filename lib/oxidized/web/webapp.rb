@@ -105,26 +105,17 @@ module Oxidized
       get '/nodes/add' do
         redirect url_for('/nodes') if session[:role] == 'readonly'
         @models = [
-          { value: 'cisco_ios', label: 'Cisco IOS' },
-          { value: 'cisco_nxos', label: 'Cisco NX-OS' },
-          { value: 'cisco_asa', label: 'Cisco ASA / FTD' },
-          { value: 'junos', label: 'Juniper JunOS' },
-          { value: 'junos_srx', label: 'Juniper SRX' },
-          { value: 'hp_comware', label: 'HPE Comware / H3C' },
-          { value: 'hp_procurve', label: 'HPE ProCurve / ArubaOS-CX' },
-          { value: 'mikrotik_routeros', label: 'MikroTik RouterOS' },
-          { value: 'huawei_vrp', label: 'Huawei VRP (VRPv5/v8)' },
-          { value: 'fortios', label: 'FortiOS (Fortigate)' },
-          { value: 'edgeos', label: 'Ubiquiti EdgeOS / VyOS' },
-          { value: 'arista_eos', label: 'Arista EOS' },
-          { value: 'dell_os10', label: 'Dell OS10' },
-          { value: 'tplink', label: 'TP-Link JetStream' }
+          { value: 'ios', label: 'Cisco IOS' },
+          { value: 'vrp', label: 'Huawei VRP' },
+          { value: 'os10', label: 'Dell OS10' },
+          { value: 'os6', label: 'Dell OS6' }
         ]
         haml :add_node, layout: true
       end
 
       post '/nodes/add' do
         redirect url_for('/nodes') if session[:role] == 'readonly'
+  
         node_name = params[:name]&.strip
         node_ip = params[:ip]&.strip
         node_model = params[:model]&.strip
@@ -132,28 +123,52 @@ module Oxidized
         node_password = params[:password]&.strip
         node_enable = params[:enable]&.strip
 
-        errors = []
-        errors << "Name is required" unless node_name && !node_name.empty?
-        errors << "Model is required" unless node_model && !node_model.empty?
-        errors << "Username is required" unless node_username && !node_username.empty?
-        errors << "Password is required" unless node_password && !node_password.empty?
-        errors << "Enable password is required" unless node_enable && !node_enable.empty?
+  	errors = []
+  	errors << "Name is required" unless node_name && !node_name.empty?
+  	errors << "Model is required" unless node_model && !node_model.empty?
+  	errors << "Username is required" unless node_username && !node_username.empty?
+  	errors << "Password is required" unless node_password && !node_password.empty?
+  	errors << "Enable password is required" unless node_enable && !node_enable.empty?
 
-        if errors.any?
-          status 400
-          return { error: errors.join(', ') }.to_json
-        end
+  	if errors.any?
+          content_type :json
+    	  status 400
+    	  return { error: errors.join(', ') }.to_json
+  	end
 
-        begin
-          db_config = Oxidized.config.input.sql
-          raise "SQL config not found" if db_config.nil?
+  	begin
+    	  # Правильное чтение конфига Oxidized
+    	  sql_config = Oxidized.config.input.sql
+    
+    	  # Извлекаем значения правильно
+    	  db_host = sql_config.respond_to?(:host) ? sql_config.host.to_s : sql_config['host'].to_s
+    	  db_port = sql_config.respond_to?(:port) ? sql_config.port.to_i : (sql_config['port'] || 1433).to_i
+    	  db_database = sql_config.respond_to?(:database) ? sql_config.database.to_s : sql_config['database'].to_s
+      	  db_user = sql_config.respond_to?(:user) ? sql_config.user.to_s : sql_config['user'].to_s
+    	  db_password = sql_config.respond_to?(:password) ? sql_config.password.to_s : sql_config['password'].to_s
+    
+    	  # Если значения пустые, пробуем альтернативные пути
+    	  if db_user.empty? || db_user.start_with?('#<')
+      	    db_user = Oxidized.config.input.sql.user.value rescue Oxidized.config.input.sql[:user].to_s
+    	  end
+    	  if db_password.empty? || db_password.start_with?('#<')
+      	    db_password = Oxidized.config.input.sql.password.value rescue Oxidized.config.input.sql[:password].to_s
+          end
+          if db_host.empty? || db_host.start_with?('#<')
+            db_host = Oxidized.config.input.sql.host.value rescue Oxidized.config.input.sql[:host].to_s
+          end
+          if db_database.empty? || db_database.start_with?('#<')
+            db_database = Oxidized.config.input.sql.database.value rescue Oxidized.config.input.sql[:database].to_s
+          end
+
+          logger.info "Connecting to DB: host=#{db_host}, port=#{db_port}, database=#{db_database}, user=#{db_user}"
 
           client = TinyTds::Client.new(
-            username: db_config.user.to_s,
-            password: db_config.password.to_s,
-            host: db_config.host.to_s,
-            port: (db_config.port || 1433).to_i,
-            database: db_config.database.to_s
+            username: db_user,
+            password: db_password,
+            host: db_host,
+            port: db_port,
+            database: db_database
           )
 
           esc = ->(val) { val.nil? || val.to_s.strip.empty? ? "NULL" : "'#{val.to_s.strip.gsub("'", "''")}'" }
@@ -162,10 +177,13 @@ module Oxidized
           client.close
 
           logger.info "Node '#{node_name}' added to MSSQL."
+          content_type :json
           status 201
           { message: "Node '#{node_name}' успешно добавлен" }.to_json
         rescue => e
-          logger.error "Failed to add node: #{e.message}"
+    	  logger.error "Failed to add node: #{e.message}"
+          logger.error e.backtrace.join("\n")
+          content_type :json
           status 500
           { error: "Database error: #{e.message}" }.to_json
         end

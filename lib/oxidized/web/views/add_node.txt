@@ -1,0 +1,36 @@
+%h1 Add New Network Device
+
+%form{ action: "/node/add", method: "post" }
+  %label{ for: "name" } Hostname/IP (Required):
+  %br
+  %input{ type: "text", id: "name", name: "name", required: true }
+  %br
+  %br
+
+  %label{ for: "model" } Model (Required):
+  %br
+  %select{ id: "model", name: "model", required: true }
+    %option{ value: "cisco_ios" } Cisco IOS
+    %option{ value: "cisco_nxos" } Cisco NX-OS
+    %option{ value: "juniper_junos" } Juniper JunOS
+    %option{ value: "hp_procurve" } HP ProCurve
+    / ... и т.д. ...
+  %br
+  %br
+
+  %label{ for: "group" } Group:
+  %br
+  %input{ type: "text", id: "group", name: "group" }
+  %br
+  %br
+
+  %label{ for: "ip" } IP Address:
+  %br
+  %input{ type: "text", id: "ip", name: "ip" }
+  %br
+  %br
+
+  %input{ type: "submit", value: "Add Node" }
+
+%br
+%a{ href: "/" } Back to Node List

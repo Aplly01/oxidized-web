@@ -34,8 +34,59 @@
               %i.bi.bi-search
           %button.btn.btn-outline-secondary.ms-2#theme-toggle{type: 'button', :'aria-label' => 'Toggle theme'}
             %i.bi.bi-moon-fill
+          -# 🔘 Кнопка выхода (показываем только авторизованным)
+          - if session[:user]
+            %a.btn.btn-outline-danger.ms-2{href: url_for('/logout'), title: 'Выйти из аккаунта'}
+              %i.bi.bi-box-arrow-right
+              %span.d-none.d-lg-inline.ms-1 Выйти
 
     .container-fluid
       =yield
+
     !=haml :footer
 
+    :javascript
+      // 🎨 Highlight.js инициализация + переключение темы
+      document.addEventListener('DOMContentLoaded', () => {
+        // Инициализация подсветки (если библиотека загружена)
+        if (typeof hljs !== 'undefined') {
+          hljs.highlightAll();
+        }
+
+        // Переключение темы highlight.js при смене темы Bootstrap
+        const themeToggle = document.getElementById('theme-toggle');
+        const hljsTheme = document.getElementById('hljs-theme');
+        const LIGHT = '/weblibs/highlight.js/css/github.min.css';
+        const DARK = '/weblibs/highlight.js/css/github-dark.min.css';
+
+        function getIsDark() {
+          return document.documentElement.getAttribute('data-bs-theme') === 'dark'
+            || document.body.classList.contains('dark-mode')
+            || window.matchMedia('(prefers-color-scheme: dark)').matches;
+        }
+
+        function applyHljsTheme() {
+          if (!hljsTheme) return;
+          hljsTheme.href = getIsDark() ? DARK : LIGHT;
+          // Переподсветка блоков после смены темы
+          document.querySelectorAll('code.hljs').forEach(el => {
+            if (typeof hljs !== 'undefined') hljs.highlightElement(el);
+          });
+        }
+
+        // Применить тему при загрузке страницы
+        applyHljsTheme();
+
+        // Слушать клик по переключателю темы
+        if (themeToggle) {
+          themeToggle.addEventListener('click', () => {
+            // Небольшая задержка, чтобы Bootstrap успел сменить тему
+            setTimeout(applyHljsTheme, 100);
+          });
+        }
+
+        // Слушать системные изменения темы (если браузер поддерживает)
+        if (window.matchMedia) {
+          window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyHljsTheme);
+        }
+      });

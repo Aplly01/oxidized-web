@@ -14,8 +14,6 @@
       %a.link-body-emphasis.link-underline-opacity-0{title: 'update',
         href: url_for("/node/next/#{@data[:full_name]}")}
         %i.bi.bi-repeat
-    %pre.bg-body-tertiary.border.border-secondary-subtle.rounded
-      %code
-        = h(JSON.pretty_generate(@data))
-
-
+    %pre.bg-body-tertiary.border.border-secondary-subtle.rounded.p-3.mb-3.overflow-auto{style: 'max-height: 70vh;'}
+      %code.hljs.language-json#node-json-data
+        = JSON.pretty_generate(@data)
