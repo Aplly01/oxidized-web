@@ -56,7 +56,10 @@
               %a.link-body-emphasis.link-underline-opacity-0{title: 'Update configuration',
                 href: url_for("/node/next/#{node[:full_name]}")}
                 %i.bi.bi-repeat
-
+              &nbsp;&nbsp;
+              %a.link-body-emphasis.link-underline-opacity-0{title: 'Logs',
+                href: url_for("/logs/#{node[:name]}")}
+                %i.bi.bi-card-list
 :javascript
   $(function() {
     var table = $('#nodesTable').DataTable({

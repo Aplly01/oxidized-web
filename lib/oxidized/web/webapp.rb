@@ -9,6 +9,8 @@ require 'logger'
 require 'rack/session'
 require 'securerandom'
 require 'yaml'
+require 'net/ssh'
+require 'timeout'
 
 module Oxidized
   module API
@@ -188,6 +190,171 @@ module Oxidized
           { error: "Database error: #{e.message}" }.to_json
         end
       end
+	  
+	  get '/nodes/bulk_import' do
+		redirect url_for('/nodes') if session[:role] == 'readonly'
+		haml :bulk_import
+	  end
+
+	  # Обработка загрузки CSV
+	  post '/nodes/bulk_import' do
+		redirect url_for('/nodes') if session[:role] == 'readonly'
+  
+		content_type :json
+  
+		file = params[:file]
+		if file.nil? || file[:tempfile].nil? || file[:size] == 0
+		  status 400
+		  return { error: "Файл не загружен или пуст" }.to_json
+		end
+  
+		# Проверяем расширение файла
+		filename = file[:filename].downcase
+		unless filename.end_with?('.csv') || filename.end_with?('.txt')
+		  status 400
+		  return { error: "Разрешены только CSV или TXT файлы" }.to_json
+		end
+  
+		# Читаем конфигурацию БД
+		begin
+		  raw_config = Oxidized.config.input.sql
+    
+		  get_str = ->(key) {
+			val = raw_config.send(key) rescue raw_config[key] rescue nil
+			if val.nil?
+			  nil
+			elsif val.is_a?(Asetus::ConfigStruct)
+			  nil
+			else
+			  val.to_s
+			end
+		  }
+
+		  db_host = get_str.call(:host)
+		  db_port = get_str.call(:port)
+		  db_database = get_str.call(:database)
+		  db_user = get_str.call(:username) || get_str.call(:user)
+		  db_password = get_str.call(:password)
+
+		  if db_user.nil? || db_user.empty? || db_password.nil? || db_password.empty? || db_host.nil? || db_host.empty?
+		    raise "Missing SQL configuration"
+		  end
+
+		  db_port = db_port.nil? || db_port.empty? ? 1433 : db_port.to_i
+
+		  client = TinyTds::Client.new(
+            username: db_user,
+            password: db_password,
+            host: db_host,
+            port: db_port,
+            database: db_database
+          )
+        rescue => e
+          status 500
+          return { error: "Ошибка подключения к БД: #{e.message}" }.to_json
+        end
+  
+		# Обрабатываем CSV файл
+		success_count = 0
+		error_count = 0
+		errors = []
+		skipped_count = 0
+  
+		begin
+		  # Читаем файл с разными кодировками
+		  file_content = nil
+		  begin
+			file_content = file[:tempfile].read.force_encoding('UTF-8')
+		  rescue
+			file[:tempfile].rewind
+			file_content = file[:tempfile].read.force_encoding('Windows-1251').encode('UTF-8')
+		  end
+    
+		  lines = file_content.lines
+		  header_skipped = false
+    
+          lines.each_with_index do |line, index|
+			line_num = index + 1
+			line.strip!
+      
+			# Пропускаем пустые строки и комментарии
+			next if line.empty? || line.start_with?('#') || line.start_with?('//')
+      
+			# Пропускаем заголовок
+			if !header_skipped && (line.downcase.start_with?('name,') || line.downcase.start_with?('ip,'))
+			  header_skipped = true
+			  skipped_count += 1
+			  next
+			end
+      
+			# Парсим CSV строку (учитываем кавычки)
+			begin
+			  # Простой парсинг CSV
+			  fields = line.split(',').map { |f| f.strip.gsub(/^["']|["']$/, '') }
+        
+			if fields.length < 4
+              error_count += 1
+			  errors << "Строка #{line_num}: Недостаточно полей (минимум: name, ip, model, username)"
+			  next
+			end
+        
+			name = fields[0]
+			ip = fields[1]
+			model = fields[2]
+			username = fields[3]
+			password = fields[4] || ''
+			enable = fields[5] || ''
+        
+			# Проверяем обязательные поля
+			if name.empty? || ip.empty? || model.empty? || username.empty?
+			  error_count += 1
+			  errors << "Строка #{line_num}: Заполните обязательные поля (name, ip, model, username)"
+			  next
+			end
+        
+			# Экранируем значения для SQL
+			esc = ->(val) { 
+              val.nil? || val.to_s.strip.empty? ? "NULL" : "'#{val.to_s.strip.gsub("'", "''")}'" 
+            }
+        
+            # Вставляем в базу
+			sql = "INSERT INTO devices (name, ip, model, username, password, enable) VALUES (#{esc[name]}, #{esc[ip]}, #{esc[model]}, #{esc[username]}, #{esc[password]}, #{esc[enable]})"
+			client.execute(sql).do
+        
+			success_count += 1
+			logger.info "Bulk import: Added node '#{name}' (#{ip})"
+        
+          rescue => e
+			error_count += 1
+			errors << "Строка #{line_num}: #{e.message}"
+			logger.error "Bulk import error at line #{line_num}: #{e.message}"
+		  end
+		end
+    
+		client.close
+    
+		# Формируем ответ
+		result = {
+	      message: "Импорт завершен. Успешно добавлено: #{success_count}",
+		  success_count: success_count,
+          error_count: error_count,
+          skipped_count: skipped_count,
+          errors: errors
+		}
+    
+		if error_count > 0
+          status 207  # Multi-Status
+        else
+          status 201
+        end
+    
+		result.to_json
+    
+      rescue => e
+		status 500
+		{ error: "Ошибка обработки файла: #{e.message}" }.to_json
+	 end
+   end
 
       get '/nodes.?:format?' do
         @data = nodes.list.map do |node|
@@ -341,6 +508,188 @@ module Oxidized
       post '/node/version/diffs' do
         redirect url_for("/node/version/diffs?node=#{params[:node]}&group=#{params[:group]}&oid=#{params[:oid]}&epoch=#{params[:epoch]}&num=#{params[:num]}&oid2=#{params[:oid2]}")
       end
+	  
+	 get '/logs/:node' do
+		redirect url_for('/nodes') unless session[:user]
+  
+		@node_name = params[:node]
+		haml :device_logs
+	 end
+	 
+	 get '/logs/api/:node' do
+	   content_type :json
+  
+	   node_name = params[:node]
+       lines = [(params[:lines] || 100).to_i, 500].min
+       log_type = params[:type] || 'system'
+  
+       begin
+         # 1. Получаем данные устройства из БД
+         db_config = Oxidized.config.input.sql
+         get_str = ->(key) {
+           val = db_config.send(key) rescue db_config[key] rescue nil
+           val.nil? || val.is_a?(Asetus::ConfigStruct) ? nil : val.to_s
+         }
+    
+         client = TinyTds::Client.new(
+           username: get_str.call(:username) || get_str.call(:user),
+           password: get_str.call(:password),
+           host: get_str.call(:host),
+           port: (get_str.call(:port) || 1433).to_i,
+           database: get_str.call(:database)
+         )
+    
+         esc = ->(val) { val.nil? || val.to_s.strip.empty? ? "NULL" : "'#{val.to_s.strip.gsub("'", "''")}'" }
+    
+         sql = "SELECT name, ip, model, username, password FROM devices WHERE name = #{esc[node_name]}"
+         result = client.execute(sql)
+         device = result.first
+         client.close
+    
+         unless device
+           status 404
+           return { error: "Устройство '#{node_name}' не найдено в базе данных" }.to_json
+         end
+    
+         device_ip = device['ip']
+         device_model = (device['model'] || '').downcase
+         device_user = device['username']
+         device_pass = device['password']
+    
+         unless device_ip && device_user && device_pass
+           status 400
+         return { error: "Устройство не имеет IP, username или password" }.to_json
+       end
+    
+       # 2. Определяем команду
+       command = get_log_command(device_model, lines, log_type)
+    
+       logger.info "SSH: Connecting to #{device_user}@#{device_ip}, command: #{command}"
+    
+       # 3. Подключаемся по SSH
+       output = ""
+    
+       Timeout.timeout(90) do
+         Net::SSH.start(device_ip, device_user, 
+           password: device_pass,
+           timeout: 30,
+           port: 22,
+           non_interactive: true,
+           verify_host_key: :never,
+           auth_methods: ['password', 'keyboard-interactive'],
+           keepalive: true,
+           keepalive_interval: 10,
+		   kex: [
+			 'ecdh-sha2-nistp256', 'ecdh-sha2-nistp384', 'ecdh-sha2-nistp521',
+			 'diffie-hellman-group-exchange-sha256', 'diffie-hellman-group-exchange-sha1',
+			 'diffie-hellman-group14-sha256', 'diffie-hellman-group14-sha1',
+			 'diffie-hellman-group1-sha1'
+           ],
+           # На всякий случай сразу добавляем и шифры, и MAC-алгоритмы (иначе будет следующая ошибка)
+		   encryption: [
+			 'aes128-ctr', 'aes192-ctr', 'aes256-ctr',
+			 'aes128-cbc', 'aes192-cbc', 'aes256-cbc',
+			 '3des-cbc', 'blowfish-cbc', 'cast128-cbc'
+		   ],
+		   hmac: [
+             'hmac-sha2-256', 'hmac-sha2-512',
+			 'hmac-sha1', 'hmac-sha1-96', 
+			 'hmac-md5', 'hmac-md5-96'
+           ]
+         ) do |ssh|
+           output = ssh.exec!(command) || ""
+         end
+       end
+    
+       logger.info "SSH: Received #{output.length} bytes"
+    
+       # 4. Обрабатываем вывод
+       log_lines = output.split("\n").map(&:strip)
+       log_lines.pop while log_lines.last && log_lines.last =~ /^[\w.@-]+[#>]\s?$/
+    
+       {
+         success: true,
+         hostname: node_name,
+         ip: device_ip,
+         model: device['model'],
+         command: command,
+         lines_count: log_lines.length,
+         logs: log_lines,
+         timestamp: Time.now.strftime('%Y-%m-%d %H:%M:%S')
+       }.to_json
+    
+     rescue Timeout::Error
+       status 504
+       { error: "Превышено время ожидания (30 сек). Устройство недоступно." }.to_json
+     rescue Net::SSH::AuthenticationFailed
+       status 401
+       { error: "Ошибка аутентификации SSH: неверный логин или пароль" }.to_json
+     rescue Net::SSH::ConnectionTimeout
+       status 504
+       { error: "Таймаут подключения SSH. Проверьте доступность #{device_ip}:22" }.to_json
+     rescue Net::SSH::Disconnect => e
+       status 503
+       { error: "SSH соединение разорвано: #{e.message}" }.to_json
+     rescue IOError => e
+       if e.message.include?("closed stream")
+         status 503
+         { error: "Соединение закрыто преждевременно. Проверьте настройки SSH на устройстве." }.to_json
+       else
+         status 500
+         { error: "Ошибка IO: #{e.message}" }.to_json
+       end
+     rescue Errno::ECONNREFUSED
+       status 503
+       { error: "Соединение отклонено. SSH-порт закрыт на #{device_ip}" }.to_json
+     rescue SocketError => e
+       status 503
+       { error: "Не удалось разрешить хост: #{e.message}" }.to_json
+     rescue => e
+       logger.error "SSH log fetch error for #{node_name}: #{e.message}"
+       logger.error e.backtrace.first(5).join("\n")
+       status 500
+       { error: "Ошибка: #{e.message}" }.to_json
+     end
+   end
+  
+  # Вспомогательный метод для получения команды в зависимости от модели
+  def get_log_command(model, lines, log_type = 'system')
+    case model
+    when /cisco|ios|nxos|iosxr/
+      case log_type
+      when 'security' then "show logging | include %{SECURITY}|%{AUTH}"
+      when 'interface' then "show logging | include %{LINK}|%{LINEPROTO}|%{UPDOWN}"
+      else "show logging | include #{lines}"
+      end
+    when /huawei|vrp|comware/
+      case log_type
+      when 'security' then "display logbuffer level warning"
+      when 'interface' then "display logbuffer | include interface|link"
+      else "display logbuffer size #{lines}"
+      end
+    when /juniper|junos/
+      case log_type
+      when 'security' then "show log messages | match security | last #{lines}"
+      when 'interface' then "show log messages | match link|interface | last #{lines}"
+      else "show log messages | last #{lines}"
+      end
+    when /mikrotik|routeros/
+      "/log print without-paging lines=#{lines}"
+    when /fortinet|fortios/
+      "execute log memory filter category 0\nexecute log memory show"
+    when /arista|eos/
+      "show logging last #{lines}"
+    when /hp|hpe|procurve|comware/
+      "display logbuffer size #{lines}"
+    when /dell|os10/
+      "show logging last #{lines}"
+    when /paloalto|panos/
+      "show system log"
+    else
+    # По умолчанию пробуем Cisco-подобную команду
+    "show logging | last #{lines}"
+    end
+  end
 
       HTML_ESCAPE = { '&' => '&amp;', '<' => '&lt;', '>' => '&gt;', '"' => '&quot;', "'" => '&#39;' }.freeze
       HTML_ESCAPE_ONCE_REGEX = /['" &<>]|&(?!([a-zA-Z]+|#(\d+|[xX][0-9a-fA-F]+);))/
